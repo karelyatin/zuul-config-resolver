@@ -40,11 +40,13 @@ def walk_parents(job_name, registry):
     return parent_chain
 
 
-def _load_include_vars(repo_dir, include_path):
+def _load_include_vars(repo_dir, include_path, required=False):
     """Load include-vars file and return a dict."""
     include_vars = {}
     full_path = os.path.join(repo_dir, include_path)
     if not os.path.isfile(full_path):
+        if required:
+            raise ValueError(f"Include-vars file not found: {full_path}")
         warnings.warn(
             f"Include-vars file not found: {full_path}",
             stacklevel=2,
@@ -99,18 +101,51 @@ def _merge_vars_layer(
             sources[key]["history"].append(historical_entry)
 
 
-def merge_parent_chain(parent_chain):
+def merge_parent_chain(
+    parent_chain, project_repos=None, ambiguous_projects=None
+):
     """Deep-merge vars and extra-vars through the parent chain.
 
     Extra-vars are merged separately, then applied on top of vars
     with dict.update(), matching Zuul's squash_variables.
     """
+    project_repos = project_repos or {}
+    ambiguous_projects = ambiguous_projects or {}
     merged_vars = {}
     vars_sources = {}
 
     for job in parent_chain:
-        for include_path in job.include_vars:
-            include_vars = _load_include_vars(job.repo_dir, include_path)
+        for entry in job.include_vars:
+            if isinstance(entry, dict):
+                include_path = entry["name"]
+                project = entry["project"]
+                if project in ambiguous_projects:
+                    paths = ", ".join(ambiguous_projects[project])
+                    raise ValueError(
+                        f"Ambiguous checkout for include-vars project "
+                        f"'{project}': {paths}; "
+                        "use --project-repo PROJECT=PATH"
+                    )
+                if project in project_repos:
+                    include_repo = project_repos[project]
+                    required = True
+                else:
+                    warnings.warn(
+                        "Could not identify checkout for include-vars project "
+                        f"'{project}' in job '{job.name}'; falling back to "
+                        "the job checkout. Use --project-repo PROJECT=PATH "
+                        "to specify the correct checkout.",
+                        stacklevel=2,
+                    )
+                    include_repo = job.repo_dir
+                    required = False
+            else:
+                include_path = entry
+                include_repo = job.repo_dir
+                required = False
+            include_vars = _load_include_vars(
+                include_repo, include_path, required=required
+            )
             _merge_vars_layer(
                 merged_vars,
                 vars_sources,
@@ -118,7 +153,7 @@ def merge_parent_chain(parent_chain):
                 {},
                 include_path,
                 job.name,
-                job.repo_dir,
+                include_repo,
             )
 
         _merge_vars_layer(
@@ -157,7 +192,9 @@ def merge_parent_chain(parent_chain):
     return merged_vars, vars_sources
 
 
-def resolve_parents(job_name, registry):
+def resolve_parents(
+    job_name, registry, project_repos=None, ambiguous_projects=None
+):
     """Walk the parent chain and return merged vars.
 
     Returns (merged_vars, vars_sources, parent_chain) where vars_sources
@@ -165,5 +202,7 @@ def resolve_parents(job_name, registry):
     is the list of JobDefinition objects from root to leaf.
     """
     parent_chain = walk_parents(job_name, registry)
-    merged_vars, vars_sources = merge_parent_chain(parent_chain)
+    merged_vars, vars_sources = merge_parent_chain(
+        parent_chain, project_repos, ambiguous_projects
+    )
     return merged_vars, vars_sources, parent_chain

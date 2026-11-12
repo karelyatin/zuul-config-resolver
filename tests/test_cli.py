@@ -26,6 +26,101 @@ def _init_repo(tmp_path):
 
 
 class TestCliSynthetic:
+    @pytest.mark.parametrize("use_config", [False, True])
+    def test_project_include_mapping(self, tmp_path, monkeypatch, use_config):
+        job_repo = tmp_path / "job-repo"
+        source_repo = tmp_path / "source-repo"
+        job_repo.mkdir()
+        (source_repo / "vars").mkdir(parents=True)
+        (source_repo / "vars" / "defaults.yaml").write_text("key: remote\n")
+        (job_repo / ".zuul.yaml").write_text(
+            "- job:\n    name: my-job\n    include-vars:\n"
+            "      - name: vars/defaults.yaml\n        project: org/source\n"
+        )
+        monkeypatch.chdir(job_repo)
+        out_dir = tmp_path / "out"
+        args = ["my-job", "--output-dir", str(out_dir)]
+        if use_config:
+            config = tmp_path / "repos.yaml"
+            config.write_text(
+                yaml.safe_dump(
+                    {
+                        "repos": [str(job_repo)],
+                        "project_repos": {"org/source": str(source_repo)},
+                    }
+                )
+            )
+            args.extend(["--config", str(config)])
+        else:
+            args.extend(["--project-repo", f"org/source={source_repo}"])
+        assert main(args) == 0
+        resolved = yaml.safe_load((out_dir / "resolved-vars.yaml").read_text())
+        sources = yaml.safe_load(
+            (out_dir / "resolved-vars-sources.yaml").read_text()
+        )
+        assert resolved["key"] == "remote"
+        assert sources["key"]["selected"]["repo_dir"] == str(source_repo)
+
+    def test_unmapped_project_falls_back_to_job_repo(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / ".zuul.yaml").write_text(
+            "- job:\n    name: my-job\n    include-vars:\n"
+            "      - name: vars/defaults.yaml\n        project: org/source\n"
+        )
+        (tmp_path / "vars").mkdir()
+        (tmp_path / "vars" / "defaults.yaml").write_text("key: local\n")
+        monkeypatch.chdir(tmp_path)
+        out_dir = tmp_path / "out"
+        with pytest.warns(UserWarning, match="falling back"):
+            assert main(["my-job", "--output-dir", str(out_dir)]) == 0
+        resolved = yaml.safe_load((out_dir / "resolved-vars.yaml").read_text())
+        assert resolved["key"] == "local"
+
+    def test_cli_project_mapping_overrides_config(self, tmp_path, monkeypatch):
+        job_repo = tmp_path / "job-repo"
+        job_repo.mkdir()
+        source_repo = tmp_path / "source-repo"
+        source_repo.mkdir()
+        (job_repo / ".zuul.yaml").write_text(
+            "- job:\n    name: my-job\n    include-vars:\n"
+            "      - name: vars.yaml\n        project: org/source\n"
+        )
+        (source_repo / "vars.yaml").write_text("key: cli\n")
+        config = tmp_path / "repos.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "repos": [str(job_repo)],
+                    "project_repos": {"org/source": str(job_repo)},
+                }
+            )
+        )
+        monkeypatch.chdir(job_repo)
+        out_dir = tmp_path / "out"
+        assert (
+            main(
+                [
+                    "my-job",
+                    "--config",
+                    str(config),
+                    "--project-repo",
+                    f"org/source={source_repo}",
+                    "--output-dir",
+                    str(out_dir),
+                ]
+            )
+            == 0
+        )
+        resolved = yaml.safe_load((out_dir / "resolved-vars.yaml").read_text())
+        assert resolved["key"] == "cli"
+
+    def test_project_repo_requires_name_and_path(self):
+        for value in ("invalid", "=path", "project="):
+            with pytest.raises(SystemExit) as exc:
+                main(["--project-repo", value, "my-job"])
+            assert exc.value.code == 2
+
     def test_no_args_errors(self, capsys):
         rc = main([])
         assert rc == 2

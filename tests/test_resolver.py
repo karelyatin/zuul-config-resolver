@@ -221,6 +221,64 @@ class TestResolverMultiRepo:
         assert merged["base_var"] == "from_a"
         assert merged["leaf_var"] == "from_b"
 
+    def test_include_vars_project_overrides_parent_and_tracks_source(
+        self, tmp_path
+    ):
+        repo_a = tmp_path / "base"
+        repo_b = tmp_path / "child"
+        for repo in (repo_a, repo_b):
+            (repo / "vars").mkdir(parents=True)
+        (repo_a / "vars" / "defaults.yaml").write_text("repos: [rhoso18]\n")
+        (repo_a / "vars" / "overlay.yaml").write_text(
+            "repos: [rhoso19]\nextra: from_a\n"
+        )
+        # A same-named file in the child repo must not be used.
+        (repo_b / "vars" / "overlay.yaml").write_text("repos: [wrong]\n")
+        (repo_a / ".zuul.yaml").write_text(
+            "- job:\n    name: base\n    include-vars:\n"
+            "      - name: vars/defaults.yaml\n"
+        )
+        (repo_b / ".zuul.yaml").write_text(
+            "- job:\n    name: child\n    parent: base\n    include-vars:\n"
+            "      - name: vars/overlay.yaml\n        project: org/base\n"
+        )
+        resolver = Resolver(
+            [str(repo_a), str(repo_b)], project_repos={"org/base": str(repo_a)}
+        )
+        merged, sources, _ = resolver.resolve_job("child")
+        assert merged["repos"] == ["rhoso19"]
+        assert merged["extra"] == "from_a"
+        assert [h["value"] for h in sources["repos"]["history"]] == [
+            ["rhoso18"],
+            ["rhoso19"],
+        ]
+        assert sources["repos"]["selected"]["repo_dir"] == str(repo_a)
+        assert sources["repos"]["selected"]["file"] == "vars/overlay.yaml"
+        assert sources["repos"]["selected"]["job_name"] == "child"
+
+    def test_unmapped_include_vars_project_falls_back(self, tmp_path):
+        (tmp_path / ".zuul.yaml").write_text(
+            "- job:\n    name: child\n    include-vars:\n"
+            "      - name: vars/overlay.yaml\n        project: org/base\n"
+        )
+        resolver = Resolver([str(tmp_path)])
+        (tmp_path / "vars").mkdir()
+        (tmp_path / "vars" / "overlay.yaml").write_text("key: fallback\n")
+        with pytest.warns(UserWarning, match="falling back"):
+            merged, _, _ = resolver.resolve_job("child")
+        assert merged["key"] == "fallback"
+
+    def test_missing_project_include_file_fails(self, tmp_path):
+        (tmp_path / ".zuul.yaml").write_text(
+            "- job:\n    name: child\n    include-vars:\n"
+            "      - name: vars/missing.yaml\n        project: org/base\n"
+        )
+        resolver = Resolver(
+            [str(tmp_path)], project_repos={"org/base": str(tmp_path)}
+        )
+        with pytest.raises(ValueError, match="Include-vars file not found"):
+            resolver.resolve_job("child")
+
     def test_rejects_string_repo_dir(self):
         with pytest.raises(TypeError, match="must be a list"):
             Resolver("/some/path")
@@ -246,6 +304,41 @@ def _init_repo(tmp_path):
 
 
 class TestComputeDiff:
+    def test_auto_detected_project_include_uses_reference_worktree(
+        self, tmp_path
+    ):
+        repo, zuul_d = _init_repo(tmp_path)
+        _git(repo, "remote", "add", "origin", "https://example.com/org/repo")
+        (repo / "vars.yaml").write_text("key: old\n")
+        (zuul_d / "jobs.yaml").write_text(
+            "- job:\n    name: my-job\n    include-vars:\n"
+            "      - name: vars.yaml\n        project: org/repo\n"
+        )
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "initial")
+        (repo / "vars.yaml").write_text("key: new\n")
+        result = compute_diff(str(repo), "HEAD")
+        assert result["my-job"]["status"] == "changed"
+        assert "values_changed" in result["my-job"]["diff"]
+
+    def test_project_include_uses_reference_worktree(self, tmp_path):
+        repo, zuul_d = _init_repo(tmp_path)
+        vars_dir = repo / "vars"
+        vars_dir.mkdir()
+        (vars_dir / "defaults.yaml").write_text("inc_key: old_val\n")
+        (zuul_d / "jobs.yaml").write_text(
+            "- job:\n    name: my-job\n    include-vars:\n"
+            "      - name: vars/defaults.yaml\n        project: org/repo\n"
+        )
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "initial")
+        (vars_dir / "defaults.yaml").write_text("inc_key: new_val\n")
+        result = compute_diff(
+            str(repo), "HEAD", project_repos={"org/repo": str(repo)}
+        )
+        assert result["my-job"]["status"] == "changed"
+        assert "values_changed" in result["my-job"]["diff"]
+
     def test_changed_var_detected(self, tmp_path):
         repo, zuul_d = _init_repo(tmp_path)
         (zuul_d / "jobs.yaml").write_text(

@@ -128,6 +128,21 @@ class TestBuildRegistry:
             "vars/more.yaml",
         ]
 
+    def test_preserves_include_vars_project(self, tmp_path):
+        (tmp_path / ".zuul.yaml").write_text(
+            "- job:\n"
+            "    name: my-job\n"
+            "    include-vars:\n"
+            "      - name: vars/other.yaml\n"
+            "        project: org/other\n"
+            "      - name: vars/local.yaml\n"
+        )
+        registry = build_registry([str(tmp_path)])
+        assert registry["my-job"].include_vars == [
+            {"name": "vars/other.yaml", "project": "org/other"},
+            "vars/local.yaml",
+        ]
+
     def test_handles_job_with_no_vars(self, tmp_path):
         d = tmp_path / "zuul.d"
         d.mkdir()

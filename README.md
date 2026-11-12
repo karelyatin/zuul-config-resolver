@@ -66,6 +66,55 @@ This writes two files to the current directory (override with `--output-dir`):
 - `resolved-vars.yaml` - all merged variables, ready for `ansible-playbook -e @resolved-vars.yaml`
 - `resolved-vars-sources.yaml` - maps each variable to its source file, job name, and merge history
 
+### Cross-project include-vars
+
+When an `include-vars` entry specifies `project`, the resolver automatically
+matches it to the checkouts supplied via `--repo-dir` or `repos`:
+
+```bash
+config-resolver \
+  --repo-dir ../ci-framework-jobs \
+  --repo-dir ../ci-framework-testproject \
+  uni3gamma-rhel10-rhoso19.0-ceph9-ykarel
+```
+
+Names are detected from a checkout's Git `origin` URL or the Zuul checkout
+layout `src/<host>/<project>`. Both `org/project` and `host/org/project` are
+supported. If multiple checkouts match, resolution fails rather than picking
+one arbitrarily. If no checkout matches, the resolver warns and falls back to
+the defining job's checkout, preserving the previous behavior; this fallback
+may produce incorrect results. Entries without `project` also use the job's
+checkout. The source report records the actual include checkout.
+
+Use `--project-repo` to override detection, resolve ambiguity, or specify a
+checkout that is not scanned for job definitions:
+
+```bash
+config-resolver --repo-dir ../ci-framework-testproject \
+  --project-repo ci-framework/ci-framework-jobs=../ci-framework-jobs \
+  my-job
+```
+
+Repeat the option for additional projects. Project names must match the
+`project` field exactly. A missing file in a detected or explicitly mapped
+project is an error. Mappings use the provided checkout, not a separately
+resolved Zuul branch or revision.
+
+Mappings can also be specified in the config file:
+
+```yaml
+repos:
+  - ../ci-framework-jobs
+  - ../ci-framework-testproject
+project_repos:
+  ci-framework/ci-framework-jobs: ../ci-framework-jobs
+```
+
+Paths are relative to the current working directory. Command-line mappings
+override config mappings for the same project. For `--diff`, a mapping to the
+repository being compared uses its reference worktree on the reference side;
+other mapped checkouts are used unchanged on both sides.
+
 ### Show conflicts
 
 Find variables where a child job silently overrides a parent's value:

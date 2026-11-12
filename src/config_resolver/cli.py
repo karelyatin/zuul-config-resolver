@@ -39,7 +39,15 @@ def _run(args):
             diff_repo = os.path.realpath(repo_dirs_list[0])
         else:
             diff_repo = os.path.realpath(os.getcwd())
-        diff_result = compute_diff(diff_repo, args.diff)
+        try:
+            diff_result = compute_diff(
+                diff_repo,
+                args.diff,
+                project_repos=dict(args.project_repo or []),
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
         show_diff(diff_result)
 
@@ -51,15 +59,20 @@ def _run(args):
 
     if args.config:
         with open(args.config) as f:
-            repo_dirs = yaml.safe_load(f)["repos"]
+            config = yaml.safe_load(f)
+        repo_dirs = config["repos"]
+        project_repos = config.get("project_repos", {})
     else:
         repo_dirs = list(args.repo_dir) if args.repo_dir else []
+        project_repos = {}
 
         cwd = os.path.realpath(os.getcwd())
         if cwd not in [os.path.realpath(d) for d in repo_dirs]:
             repo_dirs.insert(0, cwd)
 
-    resolver = Resolver(repo_dirs)
+    project_repos = dict(project_repos)
+    project_repos.update(args.project_repo or [])
+    resolver = Resolver(repo_dirs, project_repos=project_repos)
 
     if args.list_jobs:
         list_jobs(resolver)
@@ -69,9 +82,13 @@ def _run(args):
         print("error: job_name is required", file=sys.stderr)
         return 2
 
-    merged_vars, vars_sources, parent_chain = resolver.resolve_job(
-        args.job_name
-    )
+    try:
+        merged_vars, vars_sources, parent_chain = resolver.resolve_job(
+            args.job_name
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if not parent_chain:
         print(f"Job '{args.job_name}' not found in registry.", file=sys.stderr)
@@ -103,6 +120,13 @@ def _run(args):
     return 0
 
 
+def _project_repo_arg(value):
+    project, separator, path = value.partition("=")
+    if not separator or not project or not path:
+        raise argparse.ArgumentTypeError("expected PROJECT=PATH")
+    return project, path
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="config-resolver",
@@ -127,6 +151,16 @@ def main(argv=None):
             "Pass multiple times for cross-repo resolution "
             "(e.g. --repo-dir ./zuul-jobs "
             "--repo-dir ./project-config)."
+        ),
+    )
+    parser.add_argument(
+        "--project-repo",
+        action="append",
+        type=_project_repo_arg,
+        metavar="PROJECT=PATH",
+        help=(
+            "Map an include-vars project name to its local checkout. "
+            "Pass multiple times for multiple projects."
         ),
     )
     parser.add_argument(

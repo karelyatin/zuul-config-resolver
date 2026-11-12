@@ -53,7 +53,12 @@ def _parse_job(job_data, repo_dir, source_file):
         if isinstance(entry, str):
             include_vars.append(entry)
         elif isinstance(entry, dict) and "name" in entry:
-            include_vars.append(entry["name"])
+            if "project" in entry:
+                include_vars.append(
+                    {"name": entry["name"], "project": entry["project"]}
+                )
+            else:
+                include_vars.append(entry["name"])
 
     return JobDefinition(
         name=job_data["name"],
